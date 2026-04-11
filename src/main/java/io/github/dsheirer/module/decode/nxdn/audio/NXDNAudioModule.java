@@ -44,7 +44,7 @@ import java.util.concurrent.TimeUnit;
 public class NXDNAudioModule extends AmbeAudioModule
 {
     private static final int MAX_CACHED_AUDIO_MESSAGES_BEFORE_CLEAR_FALLBACK = 2;
-    private static final long SQUELCH_CLOSE_GRACE_MILLISECONDS = 500;
+    private static final long SQUELCH_CLOSE_GRACE_MILLISECONDS = 1200;
     private final SquelchStateListener mSquelchStateListener = new SquelchStateListener();
     private final NonClippingGain mGain = new NonClippingGain(5.0f, 0.95f);
     private final List<Audio> mCachedAudioMessages = new ArrayList<>();
