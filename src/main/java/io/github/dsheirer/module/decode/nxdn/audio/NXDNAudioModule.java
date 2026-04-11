@@ -28,6 +28,7 @@ import io.github.dsheirer.module.decode.nxdn.layer3.call.Audio;
 import io.github.dsheirer.module.decode.nxdn.layer3.call.Disconnect;
 import io.github.dsheirer.module.decode.nxdn.layer3.call.TransmissionRelease;
 import io.github.dsheirer.module.decode.nxdn.layer3.call.VoiceCall;
+import io.github.dsheirer.module.decode.nxdn.layer3.call.VoiceCallAssignmentDuplicateTraffic;
 import io.github.dsheirer.module.decode.nxdn.layer3.call.VoiceCallWithOptionalLocation;
 import io.github.dsheirer.module.decode.nxdn.layer3.type.AudioCodec;
 import io.github.dsheirer.preference.UserPreferences;
@@ -115,19 +116,17 @@ public class NXDNAudioModule extends AmbeAudioModule
             {
                 if(message instanceof VoiceCall voiceCall)
                 {
-                    cancelPendingSquelchClose();
-                    mEncryptedCall = voiceCall.getEncryptionKeyIdentifier().isEncrypted();
-                    mEncryptedCallStateEstablished = true;
-                    mAudioCodec = voiceCall.getCallOption().getCodec();
-                    processCachedAudio();
+                    if(shouldUseVoiceCallForAudioState(voiceCall))
+                    {
+                        establishAudioState(voiceCall);
+                    }
                 }
                 else if(message instanceof VoiceCallWithOptionalLocation voiceCall)
                 {
-                    cancelPendingSquelchClose();
-                    mEncryptedCall = voiceCall.getEncryptionKeyIdentifier().isEncrypted();
-                    mEncryptedCallStateEstablished = true;
-                    mAudioCodec = voiceCall.getCallOption().getCodec();
-                    processCachedAudio();
+                    if(!mEncryptedCallStateEstablished)
+                    {
+                        establishAudioState(voiceCall);
+                    }
                 }
                 else if(message instanceof Disconnect || message instanceof TransmissionRelease)
                 {
@@ -135,6 +134,38 @@ public class NXDNAudioModule extends AmbeAudioModule
                 }
             }
         }
+    }
+
+    /**
+     * Uses in-call voice messages freely, but avoids letting duplicate traffic assignments change audio state mid-call.
+     */
+    private boolean shouldUseVoiceCallForAudioState(VoiceCall voiceCall)
+    {
+        return !(voiceCall instanceof VoiceCallAssignmentDuplicateTraffic) || !mEncryptedCallStateEstablished;
+    }
+
+    /**
+     * Establishes the encryption and codec state used to process cached and subsequent audio frames.
+     */
+    private void establishAudioState(VoiceCall voiceCall)
+    {
+        cancelPendingSquelchClose();
+        mEncryptedCall = voiceCall.getEncryptionKeyIdentifier().isEncrypted();
+        mEncryptedCallStateEstablished = true;
+        mAudioCodec = voiceCall.getCallOption().getCodec();
+        processCachedAudio();
+    }
+
+    /**
+     * Establishes the encryption and codec state used to process cached and subsequent audio frames.
+     */
+    private void establishAudioState(VoiceCallWithOptionalLocation voiceCall)
+    {
+        cancelPendingSquelchClose();
+        mEncryptedCall = voiceCall.getEncryptionKeyIdentifier().isEncrypted();
+        mEncryptedCallStateEstablished = true;
+        mAudioCodec = voiceCall.getCallOption().getCodec();
+        processCachedAudio();
     }
 
     @Override
