@@ -32,17 +32,23 @@ import io.github.dsheirer.module.decode.nxdn.layer3.call.VoiceCallWithOptionalLo
 import io.github.dsheirer.module.decode.nxdn.layer3.type.AudioCodec;
 import io.github.dsheirer.preference.UserPreferences;
 import io.github.dsheirer.sample.Listener;
+import io.github.dsheirer.util.ThreadPool;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * NXDN AMBE audio module
  */
 public class NXDNAudioModule extends AmbeAudioModule
 {
+    private static final int MAX_CACHED_AUDIO_MESSAGES_BEFORE_CLEAR_FALLBACK = 2;
+    private static final long SQUELCH_CLOSE_GRACE_MILLISECONDS = 500;
     private final SquelchStateListener mSquelchStateListener = new SquelchStateListener();
     private final NonClippingGain mGain = new NonClippingGain(5.0f, 0.95f);
     private final List<Audio> mCachedAudioMessages = new ArrayList<>();
+    private ScheduledFuture<?> mPendingSquelchCloseFuture;
     private boolean mEncryptedCall = false;
     private boolean mEncryptedCallStateEstablished = false;
     private AudioCodec mAudioCodec;
@@ -83,6 +89,8 @@ public class NXDNAudioModule extends AmbeAudioModule
         {
             if(message instanceof Audio audio)
             {
+                cancelPendingSquelchClose();
+
                 if(mEncryptedCallStateEstablished)
                 {
                     processAudio(audio);
@@ -91,12 +99,23 @@ public class NXDNAudioModule extends AmbeAudioModule
                 {
                     //Cache audio until we can determine the encryption state
                     mCachedAudioMessages.add(audio);
+
+                    if(mCachedAudioMessages.size() >= MAX_CACHED_AUDIO_MESSAGES_BEFORE_CLEAR_FALLBACK)
+                    {
+                        //Traffic channels can start after the voice call header.  Fall back to clear half-rate audio
+                        //so late-joined calls still play instead of leaving decoded audio frames cached forever.
+                        mEncryptedCall = false;
+                        mEncryptedCallStateEstablished = true;
+                        mAudioCodec = audio.getAudioCodec();
+                        processCachedAudio();
+                    }
                 }
             }
             else if(message.isValid())
             {
                 if(message instanceof VoiceCall voiceCall)
                 {
+                    cancelPendingSquelchClose();
                     mEncryptedCall = voiceCall.getEncryptionKeyIdentifier().isEncrypted();
                     mEncryptedCallStateEstablished = true;
                     mAudioCodec = voiceCall.getCallOption().getCodec();
@@ -104,6 +123,7 @@ public class NXDNAudioModule extends AmbeAudioModule
                 }
                 else if(message instanceof VoiceCallWithOptionalLocation voiceCall)
                 {
+                    cancelPendingSquelchClose();
                     mEncryptedCall = voiceCall.getEncryptionKeyIdentifier().isEncrypted();
                     mEncryptedCallStateEstablished = true;
                     mAudioCodec = voiceCall.getCallOption().getCodec();
@@ -111,12 +131,52 @@ public class NXDNAudioModule extends AmbeAudioModule
                 }
                 else if(message instanceof Disconnect || message instanceof TransmissionRelease)
                 {
-                    closeAudioSegment();
-                    mCachedAudioMessages.clear();
-                    mEncryptedCall = false;
-                    mEncryptedCallStateEstablished = false;
+                    closeAudioSegmentAndResetCallState();
                 }
             }
+        }
+    }
+
+    @Override
+    public void stop()
+    {
+        cancelPendingSquelchClose();
+        super.stop();
+    }
+
+    /**
+     * Cancels a delayed squelch close when audio resumes during a short fade/no-sync blip.
+     */
+    private synchronized void cancelPendingSquelchClose()
+    {
+        if(mPendingSquelchCloseFuture != null)
+        {
+            mPendingSquelchCloseFuture.cancel(false);
+            mPendingSquelchCloseFuture = null;
+        }
+    }
+
+    /**
+     * Closes the audio segment and resets per-call audio state.
+     */
+    private synchronized void closeAudioSegmentAndResetCallState()
+    {
+        cancelPendingSquelchClose();
+        closeAudioSegment();
+        mEncryptedCallStateEstablished = false;
+        mEncryptedCall = false;
+        mCachedAudioMessages.clear();
+    }
+
+    /**
+     * Schedules a delayed close so brief squelch transitions do not chop active NXDN audio.
+     */
+    private synchronized void scheduleSquelchClose()
+    {
+        if(mPendingSquelchCloseFuture == null || mPendingSquelchCloseFuture.isDone())
+        {
+            mPendingSquelchCloseFuture = ThreadPool.SCHEDULED.schedule(this::closeAudioSegmentAndResetCallState,
+                SQUELCH_CLOSE_GRACE_MILLISECONDS, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -165,10 +225,11 @@ public class NXDNAudioModule extends AmbeAudioModule
         {
             if(event.getSquelchState() == SquelchState.SQUELCH)
             {
-                closeAudioSegment();
-                mEncryptedCallStateEstablished = false;
-                mEncryptedCall = false;
-                mCachedAudioMessages.clear();
+                scheduleSquelchClose();
+            }
+            else
+            {
+                cancelPendingSquelchClose();
             }
         }
     }

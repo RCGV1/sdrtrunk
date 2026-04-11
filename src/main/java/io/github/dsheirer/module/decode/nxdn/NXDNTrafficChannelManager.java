@@ -81,6 +81,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
     private final List<ChannelFrequency> mChannelFrequencies = new ArrayList<>();
     private final Lock mLock = new ReentrantLock();
     private final Map<Long, Channel> mAllocatedTrafficChannelMap = new HashMap<>();
+    private final Map<Channel, NXDNChannel> mAllocatedTrafficChannelDescriptorMap = new HashMap<>();
     private final Map<Long, NXDNChannelEventTracker> mEventTrackerMap = new HashMap<>();
     private final Queue<Channel> mAvailableTrafficChannelQueue = new LinkedTransferQueue<>();
     private final TalkerAliasManager mTalkerAliasManager = new TalkerAliasManager();
@@ -89,6 +90,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
     private Listener<IDecodeEvent> mDecodeEventListener;
     private Listener<ChannelEvent> mChannelEventListener;
     private ChannelAccessInformation mChannelAccessInformation;
+    private long mTrafficChannelFrequencyOffset;
     private boolean mIgnoreDataCalls;
     private boolean mIgnoreEncryptedCalls;
 
@@ -119,6 +121,25 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
     }
 
     /**
+     * Traffic channel descriptor assigned to the traffic channel.
+     * @param trafficChannel to lookup
+     * @return assigned descriptor or null
+     */
+    public NXDNChannel getTrafficChannelDescriptor(Channel trafficChannel)
+    {
+        mLock.lock();
+
+        try
+        {
+            return mAllocatedTrafficChannelDescriptorMap.get(trafficChannel);
+        }
+        finally
+        {
+            mLock.unlock();
+        }
+    }
+
+    /**
      * Sets the channel access info from the control channel.
      *
      * @param info from the control channel
@@ -129,6 +150,65 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
         {
             mChannelAccessInformation = info;
         }
+    }
+
+    /**
+     * Sets the measured RF offset between the nominal NXDN channel descriptor and the tuned source frequency.
+     *
+     * @param controlChannel descriptor broadcast by the control channel
+     * @param sourceFrequency currently tuned source frequency
+     */
+    public void setControlChannelFrequencyOffset(IChannelDescriptor controlChannel, long sourceFrequency)
+    {
+        if(controlChannel != null && controlChannel.getDownlinkFrequency() > 0 && sourceFrequency > 0)
+        {
+            setTrafficChannelFrequencyOffset(sourceFrequency - controlChannel.getDownlinkFrequency());
+        }
+    }
+
+    /**
+     * Sets the measured RF offset if it is within the selected channel bandwidth.
+     */
+    private void setTrafficChannelFrequencyOffset(long offset)
+    {
+        if(Math.abs(offset) < 12500 && offset != mTrafficChannelFrequencyOffset)
+        {
+            LOGGER.info("Setting NXDN traffic channel frequency offset to {} Hz", offset);
+            mTrafficChannelFrequencyOffset = offset;
+        }
+    }
+
+    /**
+     * Derives the live RF offset from the nearest configured NXDN channel map entry.
+     */
+    private void updateTrafficChannelFrequencyOffset(long currentSourceFrequency)
+    {
+        if(currentSourceFrequency <= 0 || mChannelFrequencies.isEmpty())
+        {
+            return;
+        }
+
+        long nearestOffset = 0;
+        long nearestDistance = Long.MAX_VALUE;
+
+        for(ChannelFrequency channelFrequency: mChannelFrequencies)
+        {
+            long downlink = channelFrequency.getDownlink();
+
+            if(downlink > 0)
+            {
+                long offset = currentSourceFrequency - downlink;
+                long distance = Math.abs(offset);
+
+                if(distance < nearestDistance)
+                {
+                    nearestDistance = distance;
+                    nearestOffset = offset;
+                }
+            }
+        }
+
+        setTrafficChannelFrequencyOffset(nearestOffset);
     }
 
     /**
@@ -395,7 +475,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
         }
         else
         {
-            System.out.println("TODO: make sure the traffic channel calls setCurrentChannel() on startup: " + (channel != null ? channel.getClass() : "channel is null"));
+            LOGGER.debug("NXDN traffic channel descriptor unavailable for voice call: {}", channel != null ? channel.getClass() : "channel is null");
         }
 
         processVoiceCall(voiceCall.getIdentifiers(), nxdn, voiceCall.getCallType(), voiceCall.getEncryptionKeyIdentifier(),
@@ -577,13 +657,14 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
         if(nxdnChannel != null && nxdnChannel.getDownlinkFrequency() > 0 && getInterModuleEventBus() != null)
         {
             SourceConfigTuner sourceConfig = new SourceConfigTuner();
-            sourceConfig.setFrequency(nxdnChannel.getDownlinkFrequency());
+            sourceConfig.setFrequency(nxdnChannel.getDownlinkFrequency() + mTrafficChannelFrequencyOffset);
             if(mParentChannel.getSourceConfiguration() instanceof SourceConfigTuner parentConfigTuner)
             {
                 sourceConfig.setPreferredTuner(parentConfigTuner.getPreferredTuner());
             }
             trafficChannel.setSourceConfiguration(sourceConfig);
             mAllocatedTrafficChannelMap.put(nxdnChannel.getDownlinkFrequency(), trafficChannel);
+            mAllocatedTrafficChannelDescriptorMap.put(trafficChannel, nxdnChannel);
             ChannelStartProcessingRequest startChannelRequest = new ChannelStartProcessingRequest(trafficChannel,
                     nxdnChannel, ic, this);
             startChannelRequest.addPreloadDataContent(new NXDNChannelInfoPreloadData(mChannelAccessInformation, mChannelFrequencies));
@@ -593,6 +674,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
         else
         {
             //Return the channel to the traffic channel pool if we didn't start it.
+            mAllocatedTrafficChannelDescriptorMap.remove(trafficChannel);
             mAvailableTrafficChannelQueue.add(trafficChannel);
         }
     }
@@ -641,6 +723,8 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
         try
         {
             //Clear any traffic channel that is already allocated on the new/current control frequency
+            updateTrafficChannelFrequencyOffset(current);
+
             if(mAllocatedTrafficChannelMap.containsKey(current))
             {
                 broadcast(new ChannelEvent(mAllocatedTrafficChannelMap.get(current), ChannelEvent.Event.REQUEST_DISABLE));
@@ -682,6 +766,8 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
                 LOGGER.info("Stopping NXDN traffic channel: " + channel);
                 broadcast(new ChannelEvent(channel, ChannelEvent.Event.REQUEST_DISABLE));
             }
+
+            mAllocatedTrafficChannelDescriptorMap.clear();
         }
         finally
         {
@@ -752,6 +838,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
                                     .findFirst()
                                     .ifPresent(frequency -> {
                                         mAllocatedTrafficChannelMap.remove(frequency);
+                                        mAllocatedTrafficChannelDescriptorMap.remove(channel);
                                         //Don't remove the tracker.  There's a chance the control channel can still
                                         //reference the now terminating traffic channel and cause a residual event
                                         //creation and channel allocation and we'll use the tracker to keep that from
@@ -767,6 +854,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
                                     .findFirst()
                                     .ifPresent(rejectedFrequency -> {
                                         mAllocatedTrafficChannelMap.remove(rejectedFrequency);
+                                        mAllocatedTrafficChannelDescriptorMap.remove(channel);
                                         mAvailableTrafficChannelQueue.add(channel);
 
                                         //Leave the event in the map so that it doesn't get recreated.  The channel

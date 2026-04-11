@@ -19,6 +19,7 @@
 
 package io.github.dsheirer.module.decode.nxdn;
 
+import io.github.dsheirer.channel.IChannelDescriptor;
 import io.github.dsheirer.channel.state.ChangeChannelTimeoutEvent;
 import io.github.dsheirer.channel.state.DecoderState;
 import io.github.dsheirer.channel.state.DecoderStateEvent;
@@ -83,6 +84,7 @@ import java.util.List;
 public class NXDNDecoderState extends DecoderState
 {
     private static final int IDLE_DURING_CALL_MAX_COUNT = 5;
+    private static final int TRAFFIC_CHANNEL_TIMEOUT_MILLISECONDS = 8000;
     private final Channel mChannel;
     private final NXDNNetworkConfigurationMonitor mNetworkConfigurationMonitor = new NXDNNetworkConfigurationMonitor();
     private final NXDNTrafficChannelManager mTrafficChannelManager;
@@ -120,10 +122,10 @@ public class NXDNDecoderState extends DecoderState
     {
         super.start();
 
-        //Change the default (45-second) traffic channel timeout to 1 second
         if(mChannel.isTrafficChannel())
         {
-            broadcast(new ChangeChannelTimeoutEvent(this, Channel.ChannelType.TRAFFIC, 1000));
+            //Bridge short idle/control bursts without holding stale traffic channels open too long.
+            broadcast(new ChangeChannelTimeoutEvent(this, Channel.ChannelType.TRAFFIC, TRAFFIC_CHANNEL_TIMEOUT_MILLISECONDS));
         }
     }
 
@@ -131,6 +133,27 @@ public class NXDNDecoderState extends DecoderState
     public DecoderType getDecoderType()
     {
         return DecoderType.NXDN;
+    }
+
+    /**
+     * Current channel descriptor, recovering the assigned traffic descriptor if preload updates have not arrived yet.
+     */
+    private IChannelDescriptor getCurrentChannelDescriptor()
+    {
+        IChannelDescriptor channel = getCurrentChannel();
+
+        if(mChannel.isTrafficChannel() && hasTrafficChannelManager())
+        {
+            IChannelDescriptor assignedChannel = mTrafficChannelManager.getTrafficChannelDescriptor(mChannel);
+
+            if(assignedChannel != null && assignedChannel != channel)
+            {
+                setCurrentChannel(assignedChannel);
+                channel = assignedChannel;
+            }
+        }
+
+        return channel;
     }
 
     @Override
@@ -202,7 +225,7 @@ public class NXDNDecoderState extends DecoderState
         MutableIdentifierCollection mic = getMutableIdentifierCollection(identifiers);
         mTrafficChannelManager.getTalkerAliasManager().enrichMutable(mic);
         broadcast(NXDNDecodeEvent.builder(decodeEventType, timestamp)
-                .channel(getCurrentChannel())
+                .channel(getCurrentChannelDescriptor())
                 .details(details)
                 .identifiers(mic)
                 .build());
@@ -269,7 +292,7 @@ public class NXDNDecoderState extends DecoderState
                     mEncryptedCall = vc.getEncryptionKeyIdentifier().isEncrypted();
                     state = mEncryptedCall ? State.ENCRYPTED : State.CALL;
                     event = DecoderStateEvent.Event.START;
-                    mTrafficChannelManager.processVoiceCall(vc, getCurrentChannel());
+                    mTrafficChannelManager.processVoiceCall(vc, getCurrentChannelDescriptor());
                 }
                 break;
             case CONTROL_OUT_02_CC_VOICE_CALL_RECEPTION_REQUEST:
@@ -321,7 +344,7 @@ public class NXDNDecoderState extends DecoderState
             case TRAFFIC_OUT_07_CC_TRANSMISSION_RELEASE_EXTENSION:
             case TRAFFIC_OUT_08_CC_TRANSMISSION_RELEASE:
             case TYPE_D_OUT_08_CC_TRANSMISSION_RELEASE:
-                mTrafficChannelManager.processEndCall(getCurrentChannel(), layer3.getTimestamp());
+                mTrafficChannelManager.processEndCall(getCurrentChannelDescriptor(), layer3.getTimestamp());
                 mEncryptedCallStateDetermined = false;
                 mEncryptedCall = false;
                 mIdleDuringCallCount = IDLE_DURING_CALL_MAX_COUNT;
@@ -401,7 +424,7 @@ public class NXDNDecoderState extends DecoderState
                 break;
             case TRAFFIC_OUT_17_CC_DISCONNECT:
             case TYPE_D_OUT_17_CC_DISCONNECT:
-                mTrafficChannelManager.processEndCall(getCurrentChannel(), layer3.getTimestamp());
+                mTrafficChannelManager.processEndCall(getCurrentChannelDescriptor(), layer3.getTimestamp());
                 mEncryptedCallStateDetermined = false;
                 mEncryptedCall = false;
                 getIdentifierCollection().remove(IdentifierClass.USER);
@@ -432,6 +455,7 @@ public class NXDNDecoderState extends DecoderState
                 if(layer3 instanceof ControlChannelInformation cci)
                 {
                     setCurrentChannel(cci.getChannel1());
+                    mTrafficChannelManager.setControlChannelFrequencyOffset(cci.getChannel1(), getCurrentFrequency());
                 }
                 break;
             case TRAFFIC_OUT_24_BC_SITE_INFORMATION:
@@ -526,7 +550,7 @@ public class NXDNDecoderState extends DecoderState
                 if(layer3 instanceof AuthenticationInquiryResponseMultiSystem airms)
                 {
                     broadcast(NXDNDecodeEvent.builder(DecodeEventType.RESPONSE, layer3.getTimestamp())
-                            .channel(getCurrentChannel())
+                            .channel(getCurrentChannelDescriptor())
                             .identifiers(getMutableIdentifierCollection(airms.getIdentifiers()))
                             .details("AUTHENTICATION: " + airms.getAuthenticationValue())
                             .build());
@@ -603,7 +627,7 @@ public class NXDNDecoderState extends DecoderState
                 if(layer3 instanceof ShortDataCallRequestHeader sdcrh)
                 {
                     broadcast(NXDNDecodeEvent.builder(DecodeEventType.REQUEST, layer3.getTimestamp())
-                            .channel(getCurrentChannel())
+                            .channel(getCurrentChannelDescriptor())
                             .identifiers(getMutableIdentifierCollection(sdcrh.getIdentifiers()))
                             .details("SHORT DATA CALL")
                             .build());
@@ -626,7 +650,7 @@ public class NXDNDecoderState extends DecoderState
                 if(layer3 instanceof ShortDataCallResponse sdcr)
                 {
                     broadcast(NXDNDecodeEvent.builder(DecodeEventType.RESPONSE, layer3.getTimestamp())
-                            .channel(getCurrentChannel())
+                            .channel(getCurrentChannelDescriptor())
                             .identifiers(getMutableIdentifierCollection(sdcr.getIdentifiers()))
                             .details("SHORT DATA CALL: " + sdcr.getCause())
                             .build());
@@ -649,7 +673,7 @@ public class NXDNDecoderState extends DecoderState
 
                     if(radio instanceof RadioIdentifier ri)
                     {
-                        mTrafficChannelManager.processTalkerAlias(getCurrentChannel(), tac.getTalkerAlias(), ri, tac.getTimestamp());
+                        mTrafficChannelManager.processTalkerAlias(getCurrentChannelDescriptor(), tac.getTalkerAlias(), ri, tac.getTimestamp());
                     }
                 }
                 break;
@@ -709,7 +733,7 @@ public class NXDNDecoderState extends DecoderState
             state = State.ENCRYPTED;
         }
 
-        mTrafficChannelManager.processCallProgressUpdate(getCurrentChannel(), audio.getTimestamp());
+        mTrafficChannelManager.processCallProgressUpdate(getCurrentChannelDescriptor(), audio.getTimestamp());
 
         broadcast(new DecoderStateEvent(this, DecoderStateEvent.Event.CONTINUATION, state));
     }
@@ -724,7 +748,7 @@ public class NXDNDecoderState extends DecoderState
         {
             PlottableDecodeEvent plottableEvent = PlottableDecodeEvent.plottableBuilder(DecodeEventType.GPS, gps.getTimestamp())
                     .identifiers(new IdentifierCollection(message.getPacketSequence().getHeader().getIdentifiers()))
-                    .channel(getCurrentChannel())
+                    .channel(getCurrentChannelDescriptor())
                     .details(gps.getLocationFormatted() + " HDG: " + gps.getHeading() + " SPD:" + gps.getSpeed() +
                             " ELE:" + gps.getElevation())
                     .protocol(Protocol.NXDN)
