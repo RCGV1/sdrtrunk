@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sdrtrunk.transcriber</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/benjaminfaershtein/Documents/sdrtrunk/tools/transcription_service/run-transcriber.sh</string>
+        <string>--recordings-dir</string>
+        <string>/Users/benjaminfaershtein/SDRTrunk/recordings</string>
+        <string>--output-dir</string>
+        <string>/Users/benjaminfaershtein/SDRTrunk/transcripts</string>
+        <string>--engine</string>
+        <string>mlx-whisper</string>
+        <string>--model</string>
+        <string>mlx-community/whisper-large-v3-turbo</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/benjaminfaershtein/SDRTrunk/logs/transcriber.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/benjaminfaershtein/SDRTrunk/logs/transcriber.err.log</string>
+</dict>
+</plist>
