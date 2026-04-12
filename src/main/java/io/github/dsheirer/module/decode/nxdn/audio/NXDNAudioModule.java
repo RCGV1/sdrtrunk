@@ -45,11 +45,16 @@ import java.util.concurrent.TimeUnit;
 public class NXDNAudioModule extends AmbeAudioModule
 {
     private static final int MAX_CACHED_AUDIO_MESSAGES_BEFORE_CLEAR_FALLBACK = 2;
+    private static final int AUDIO_SAMPLES_PER_FRAME = 160;
     private static final long SQUELCH_CLOSE_GRACE_MILLISECONDS = 1200;
+    private static final long SQUELCH_BRIDGE_SILENCE_INTERVAL_MILLISECONDS = 20;
+    private static final float[] SQUELCH_BRIDGE_SILENCE = new float[AUDIO_SAMPLES_PER_FRAME];
     private final SquelchStateListener mSquelchStateListener = new SquelchStateListener();
     private final NonClippingGain mGain = new NonClippingGain(5.0f, 0.95f);
     private final List<Audio> mCachedAudioMessages = new ArrayList<>();
     private ScheduledFuture<?> mPendingSquelchCloseFuture;
+    private ScheduledFuture<?> mPendingSquelchSilenceFuture;
+    private boolean mAudioSegmentOpen = false;
     private boolean mEncryptedCall = false;
     private boolean mEncryptedCallStateEstablished = false;
     private AudioCodec mAudioCodec;
@@ -185,6 +190,12 @@ public class NXDNAudioModule extends AmbeAudioModule
             mPendingSquelchCloseFuture.cancel(false);
             mPendingSquelchCloseFuture = null;
         }
+
+        if(mPendingSquelchSilenceFuture != null)
+        {
+            mPendingSquelchSilenceFuture.cancel(false);
+            mPendingSquelchSilenceFuture = null;
+        }
     }
 
     /**
@@ -194,6 +205,7 @@ public class NXDNAudioModule extends AmbeAudioModule
     {
         cancelPendingSquelchClose();
         closeAudioSegment();
+        mAudioSegmentOpen = false;
         mEncryptedCallStateEstablished = false;
         mEncryptedCall = false;
         mCachedAudioMessages.clear();
@@ -208,6 +220,24 @@ public class NXDNAudioModule extends AmbeAudioModule
         {
             mPendingSquelchCloseFuture = ThreadPool.SCHEDULED.schedule(this::closeAudioSegmentAndResetCallState,
                 SQUELCH_CLOSE_GRACE_MILLISECONDS, TimeUnit.MILLISECONDS);
+        }
+
+        if(mAudioSegmentOpen && (mPendingSquelchSilenceFuture == null || mPendingSquelchSilenceFuture.isDone()))
+        {
+            mPendingSquelchSilenceFuture = ThreadPool.SCHEDULED.scheduleAtFixedRate(this::addSquelchBridgeSilence,
+                SQUELCH_BRIDGE_SILENCE_INTERVAL_MILLISECONDS, SQUELCH_BRIDGE_SILENCE_INTERVAL_MILLISECONDS,
+                TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
+     * Keeps the current audio segment alive during short RF/no-sync fades so playback doesn't abandon it as stalled.
+     */
+    private synchronized void addSquelchBridgeSilence()
+    {
+        if(mAudioSegmentOpen && mPendingSquelchCloseFuture != null && !mPendingSquelchCloseFuture.isDone())
+        {
+            addAudio(SQUELCH_BRIDGE_SILENCE);
         }
     }
 
@@ -227,7 +257,7 @@ public class NXDNAudioModule extends AmbeAudioModule
     /**
      * Processes an audio packet by decoding the IMBE audio frames and rebroadcasting them as PCM audio packets.
      */
-    private void processAudio(Audio audio)
+    private synchronized void processAudio(Audio audio)
     {
         if(!mEncryptedCall && mAudioCodec != null && mAudioCodec.equals(AudioCodec.HALF_RATE)) //Full rate not yet supported
         {
@@ -236,6 +266,7 @@ public class NXDNAudioModule extends AmbeAudioModule
                 float[] generatedAudio = getAudioCodec().getAudio(frame);
                 generatedAudio = mGain.apply(generatedAudio);
                 addAudio(generatedAudio);
+                mAudioSegmentOpen = true;
             }
         }
         else
