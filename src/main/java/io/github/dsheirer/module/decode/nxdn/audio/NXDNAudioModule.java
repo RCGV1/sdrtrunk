@@ -44,7 +44,7 @@ import java.util.concurrent.TimeUnit;
  */
 public class NXDNAudioModule extends AmbeAudioModule
 {
-    private static final int MAX_CACHED_AUDIO_MESSAGES_BEFORE_CLEAR_FALLBACK = 2;
+    private static final int MAX_CACHED_AUDIO_MESSAGES = 12;
     private static final int AUDIO_SAMPLES_PER_FRAME = 160;
     private static final long SQUELCH_CLOSE_GRACE_MILLISECONDS = 1200;
     private static final long SQUELCH_BRIDGE_SILENCE_INTERVAL_MILLISECONDS = 20;
@@ -106,14 +106,11 @@ public class NXDNAudioModule extends AmbeAudioModule
                     //Cache audio until we can determine the encryption state
                     mCachedAudioMessages.add(audio);
 
-                    if(mCachedAudioMessages.size() >= MAX_CACHED_AUDIO_MESSAGES_BEFORE_CLEAR_FALLBACK)
+                    if(mCachedAudioMessages.size() > MAX_CACHED_AUDIO_MESSAGES)
                     {
-                        //Traffic channels can start after the voice call header.  Fall back to clear half-rate audio
-                        //so late-joined calls still play instead of leaving decoded audio frames cached forever.
-                        mEncryptedCall = false;
-                        mEncryptedCallStateEstablished = true;
-                        mAudioCodec = audio.getAudioCodec();
-                        processCachedAudio();
+                        //Bound memory while waiting for a voice header to establish clear vs. encrypted state.
+                        //Dropping the oldest unknown packet is preferable to forcing a scrambled call into clear audio.
+                        mCachedAudioMessages.remove(0);
                     }
                 }
             }
