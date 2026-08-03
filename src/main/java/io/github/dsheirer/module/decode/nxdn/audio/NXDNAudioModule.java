@@ -18,12 +18,14 @@
  */
 package io.github.dsheirer.module.decode.nxdn.audio;
 
+import com.google.common.eventbus.Subscribe;
 import io.github.dsheirer.alias.AliasList;
 import io.github.dsheirer.audio.codec.mbe.AmbeAudioModule;
 import io.github.dsheirer.audio.squelch.SquelchState;
 import io.github.dsheirer.audio.squelch.SquelchStateEvent;
 import io.github.dsheirer.dsp.gain.NonClippingGain;
 import io.github.dsheirer.message.IMessage;
+import io.github.dsheirer.module.decode.nxdn.NXDNCallPreloadData;
 import io.github.dsheirer.module.decode.nxdn.layer3.call.Audio;
 import io.github.dsheirer.module.decode.nxdn.layer3.call.Disconnect;
 import io.github.dsheirer.module.decode.nxdn.layer3.call.TransmissionRelease;
@@ -84,6 +86,16 @@ public class NXDNAudioModule extends AmbeAudioModule
     @Override
     public void start()
     {
+    }
+
+    /**
+     * Preloads authoritative call state from the control-channel grant so late-joined clear calls can decode audio.
+     */
+    @Subscribe
+    public void preload(NXDNCallPreloadData preloadData)
+    {
+        NXDNCallPreloadData.CallState callState = preloadData.getData();
+        establishAudioState(callState.encrypted(), callState.audioCodec());
     }
 
     /**
@@ -151,11 +163,7 @@ public class NXDNAudioModule extends AmbeAudioModule
      */
     private void establishAudioState(VoiceCall voiceCall)
     {
-        cancelPendingSquelchClose();
-        mEncryptedCall = voiceCall.getEncryptionKeyIdentifier().isEncrypted();
-        mEncryptedCallStateEstablished = true;
-        mAudioCodec = voiceCall.getCallOption().getCodec();
-        processCachedAudio();
+        establishAudioState(voiceCall.getEncryptionKeyIdentifier().isEncrypted(), voiceCall.getCallOption().getCodec());
     }
 
     /**
@@ -163,10 +171,18 @@ public class NXDNAudioModule extends AmbeAudioModule
      */
     private void establishAudioState(VoiceCallWithOptionalLocation voiceCall)
     {
+        establishAudioState(voiceCall.getEncryptionKeyIdentifier().isEncrypted(), voiceCall.getCallOption().getCodec());
+    }
+
+    /**
+     * Establishes encryption and codec state from a decoded voice message or an authoritative control-channel grant.
+     */
+    private void establishAudioState(boolean encrypted, AudioCodec audioCodec)
+    {
         cancelPendingSquelchClose();
-        mEncryptedCall = voiceCall.getEncryptionKeyIdentifier().isEncrypted();
+        mEncryptedCall = encrypted;
         mEncryptedCallStateEstablished = true;
-        mAudioCodec = voiceCall.getCallOption().getCodec();
+        mAudioCodec = audioCodec;
         processCachedAudio();
     }
 

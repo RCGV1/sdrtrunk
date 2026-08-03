@@ -179,6 +179,15 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
     }
 
     /**
+     * Converts an NXDN channel descriptor's nominal frequency to the tuned RF frequency used by source and allocation
+     * state.
+     */
+    long getTunedFrequency(long nominalFrequency)
+    {
+        return nominalFrequency + mTrafficChannelFrequencyOffset;
+    }
+
+    /**
      * Derives the live RF offset from the nearest configured NXDN channel map entry.
      */
     private void updateTrafficChannelFrequencyOffset(long currentSourceFrequency)
@@ -401,16 +410,14 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
                 }
                 else
                 {
-                    if(!tracker.isTrafficChannelAllocated() && channel.isValid() &&
-                            channel.getDownlinkFrequency() != getCurrentControlFrequency() &&
-                            !mAllocatedTrafficChannelMap.containsKey(channel.getDownlinkFrequency()))
+                    if(canAllocateTrafficChannel(channel, tracker))
                     {
                         //Retrieve a channel from the traffic channel queue
                         Channel traffic = mAvailableTrafficChannelQueue.poll();
 
                         if(traffic != null)
                         {
-                            requestTrafficChannelStart(traffic, channel, ic, tracker);
+                            requestTrafficChannelStart(traffic, channel, ic, tracker, null);
                         }
                         else
                         {
@@ -437,7 +444,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
     {
         if(vca.hasChannel() && vca.getChannel().getDownlinkFrequency() > 0)
         {
-            LOGGER.info("NXDN voice call assignment frequency:{} type:{} encrypted:{} timer:{} options:{} channel:{}",
+            LOGGER.debug("NXDN voice call assignment frequency:{} type:{} encrypted:{} timer:{} options:{} channel:{}",
                     vca.getChannel().getDownlinkFrequency(), vca.getCallType(),
                     vca.getEncryptionKeyIdentifier().isEncrypted(), vca.getCallTimer(), vca.getCallOption(),
                     vca.getChannel());
@@ -446,7 +453,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
         }
         else
         {
-            LOGGER.warn("NXDN voice call assignment missing usable channel hasChannel:{} channel:{} type:{} encrypted:{}",
+            LOGGER.debug("NXDN voice call assignment missing usable channel hasChannel:{} channel:{} type:{} encrypted:{}",
                     vca.hasChannel(), vca.getChannel(), vca.getCallType(), vca.getEncryptionKeyIdentifier().isEncrypted());
         }
     }
@@ -466,7 +473,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
             channel = new NXDNChannelFake(vca.getDestination().getValue());
         }
 
-        LOGGER.info("NXDN duplicate traffic assignment frequency:{} type:{} encrypted:{} timer:{} options:{} channel:{}",
+        LOGGER.debug("NXDN duplicate traffic assignment frequency:{} type:{} encrypted:{} timer:{} options:{} channel:{}",
                 channel.getDownlinkFrequency(), vca.getCallType(), vca.getEncryptionKeyIdentifier().isEncrypted(),
                 vca.getCallTimer(), vca.getCallOption(), channel);
 
@@ -635,29 +642,28 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
                         frequency, ic.getIdentifiers());
                 tracker.prefixDetails("IGNORED ENCRYPTED");
             }
-            else if(!tracker.isTrafficChannelAllocated() && channel != null && channel.isValid() &&
-                    channel.getDownlinkFrequency() != getCurrentControlFrequency() &&
-                    !mAllocatedTrafficChannelMap.containsKey(frequency))
+            else if(channel != null && canAllocateTrafficChannel(channel, tracker))
             {
                 //Retrieve a channel from the traffic channel queue
                 Channel traffic = mAvailableTrafficChannelQueue.poll();
 
                 if(traffic != null)
                 {
-                    requestTrafficChannelStart(traffic, channel, ic, tracker);
+                    requestTrafficChannelStart(traffic, channel, ic, tracker,
+                            new NXDNCallPreloadData(encryption.isEncrypted(), vco.getCodec()));
                 }
                 else
                 {
-                    LOGGER.warn("NXDN no traffic channel available for frequency:{} identifiers:{}",
+                    LOGGER.debug("NXDN no traffic channel available for frequency:{} identifiers:{}",
                             frequency, ic.getIdentifiers());
                     tracker.addDetails(MAX_TRAFFIC_CHANNELS_EXCEEDED + " " + tracker.getEvent().getDetails());
                 }
             }
             else if(channel == null || !channel.isValid())
             {
-                LOGGER.warn("NXDN not allocating traffic channel frequency:{} channel:{} valid:{} controlFrequency:{} allocated:{}",
+                LOGGER.debug("NXDN not allocating traffic channel frequency:{} channel:{} valid:{} controlFrequency:{} allocated:{}",
                         frequency, channel, channel != null && channel.isValid(), getCurrentControlFrequency(),
-                        mAllocatedTrafficChannelMap.containsKey(frequency));
+                        mAllocatedTrafficChannelMap.containsKey(getTunedFrequency(frequency)));
             }
 
             broadcast(tracker);
@@ -669,6 +675,25 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
     }
 
     /**
+     * Indicates if a valid traffic descriptor can be allocated without colliding with the tuned control frequency.
+     */
+    private boolean canAllocateTrafficChannel(NXDNChannel channel, NXDNChannelEventTracker tracker)
+    {
+        long tunedFrequency = getTunedFrequency(channel.getDownlinkFrequency());
+        return !tracker.isTrafficChannelAllocated() && channel.isValid() &&
+                !isControlFrequency(channel.getDownlinkFrequency()) &&
+                !mAllocatedTrafficChannelMap.containsKey(tunedFrequency);
+    }
+
+    /**
+     * Indicates if a nominal channel descriptor resolves to the currently tuned control frequency.
+     */
+    boolean isControlFrequency(long nominalFrequency)
+    {
+        return getTunedFrequency(nominalFrequency) == getCurrentControlFrequency();
+    }
+
+    /**
      * Sends a channel start request to the ChannelProcessingManager.
      * Note: this method is not thread safe and the calling method must protect access using mLock.
      *
@@ -676,20 +701,23 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
      * @param nxdnChannel that describes the traffic channel downlink frequency
      * @param ic containing identifiers for the call
      * @param tracker to update with channel allocation flag
+     * @param callPreloadData authoritative voice-call state, or null for a data call
      */
     private void requestTrafficChannelStart(Channel trafficChannel, NXDNChannel nxdnChannel,
-                                            IdentifierCollection ic, NXDNChannelEventTracker tracker)
+                                            IdentifierCollection ic, NXDNChannelEventTracker tracker,
+                                            NXDNCallPreloadData callPreloadData)
     {
         if(nxdnChannel != null && nxdnChannel.getDownlinkFrequency() > 0 && getInterModuleEventBus() != null)
         {
             SourceConfigTuner sourceConfig = new SourceConfigTuner();
-            sourceConfig.setFrequency(nxdnChannel.getDownlinkFrequency() + mTrafficChannelFrequencyOffset);
+            long tunedFrequency = getTunedFrequency(nxdnChannel.getDownlinkFrequency());
+            sourceConfig.setFrequency(tunedFrequency);
             if(mParentChannel.getSourceConfiguration() instanceof SourceConfigTuner parentConfigTuner)
             {
                 sourceConfig.setPreferredTuner(parentConfigTuner.getPreferredTuner());
             }
             trafficChannel.setSourceConfiguration(sourceConfig);
-            mAllocatedTrafficChannelMap.put(nxdnChannel.getDownlinkFrequency(), trafficChannel);
+            mAllocatedTrafficChannelMap.put(tunedFrequency, trafficChannel);
             mAllocatedTrafficChannelDescriptorMap.put(trafficChannel, nxdnChannel);
             LOGGER.info("NXDN starting traffic channel sourceFrequency:{} tunedFrequency:{} offset:{} channel:{} identifiers:{}",
                     nxdnChannel.getDownlinkFrequency(), sourceConfig.getFrequency(), mTrafficChannelFrequencyOffset,
@@ -697,6 +725,10 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
             ChannelStartProcessingRequest startChannelRequest = new ChannelStartProcessingRequest(trafficChannel,
                     nxdnChannel, ic, this);
             startChannelRequest.addPreloadDataContent(new NXDNChannelInfoPreloadData(mChannelAccessInformation, mChannelFrequencies));
+            if(callPreloadData != null)
+            {
+                startChannelRequest.addPreloadDataContent(callPreloadData);
+            }
             getInterModuleEventBus().post(startChannelRequest);
             tracker.setTrafficChannelAllocated(true);
         }
