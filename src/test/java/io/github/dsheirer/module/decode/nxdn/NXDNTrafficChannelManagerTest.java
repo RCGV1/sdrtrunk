@@ -70,7 +70,7 @@ class NXDNTrafficChannelManagerTest
         Channel parent = new Channel("NXDN test", Channel.ChannelType.STANDARD);
         parent.setDecodeConfiguration(configuration);
         NXDNTrafficChannelManager manager = new NXDNTrafficChannelManager(parent);
-        StartRequestRecorder recorder = new StartRequestRecorder();
+        StartRequestRecorder recorder = new StartRequestRecorder(manager);
         EventBus eventBus = new EventBus();
         eventBus.register(recorder);
         manager.setInterModuleEventBus(eventBus);
@@ -84,10 +84,6 @@ class NXDNTrafficChannelManagerTest
         manager.processVoiceCall(voiceCall, trafficChannel);
         Assertions.assertEquals(1, recorder.requests.size());
 
-        Channel allocatedChannel = recorder.requests.getFirst().getChannel();
-        manager.getChannelEventListener().receive(new ChannelEvent(allocatedChannel,
-                ChannelEvent.Event.NOTIFICATION_PROCESSING_START_REJECTED, "tuner unavailable"));
-
         manager.processVoiceCall(voiceCall, trafficChannel);
         Assertions.assertEquals(2, recorder.requests.size());
     }
@@ -95,11 +91,19 @@ class NXDNTrafficChannelManagerTest
     private static class StartRequestRecorder
     {
         private final List<ChannelStartProcessingRequest> requests = new ArrayList<>();
+        private final NXDNTrafficChannelManager mManager;
+
+        private StartRequestRecorder(NXDNTrafficChannelManager manager)
+        {
+            mManager = manager;
+        }
 
         @Subscribe
         public void receive(ChannelStartProcessingRequest request)
         {
             requests.add(request);
+            mManager.getChannelEventListener().receive(new ChannelEvent(request.getChannel(),
+                    ChannelEvent.Event.NOTIFICATION_PROCESSING_START_REJECTED, "tuner unavailable"));
         }
     }
 

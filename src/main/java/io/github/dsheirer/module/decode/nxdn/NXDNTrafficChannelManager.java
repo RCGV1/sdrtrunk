@@ -729,8 +729,8 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
             {
                 startChannelRequest.addPreloadDataContent(callPreloadData);
             }
-            getInterModuleEventBus().post(startChannelRequest);
             tracker.setTrafficChannelAllocated(true);
+            getInterModuleEventBus().post(startChannelRequest);
         }
         else
         {
