@@ -719,7 +719,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
             trafficChannel.setSourceConfiguration(sourceConfig);
             mAllocatedTrafficChannelMap.put(tunedFrequency, trafficChannel);
             mAllocatedTrafficChannelDescriptorMap.put(trafficChannel, nxdnChannel);
-            LOGGER.info("NXDN starting traffic channel sourceFrequency:{} tunedFrequency:{} offset:{} channel:{} identifiers:{}",
+            LOGGER.debug("NXDN starting traffic channel sourceFrequency:{} tunedFrequency:{} offset:{} channel:{} identifiers:{}",
                     nxdnChannel.getDownlinkFrequency(), sourceConfig.getFrequency(), mTrafficChannelFrequencyOffset,
                     trafficChannel, ic.getIdentifiers());
             ChannelStartProcessingRequest startChannelRequest = new ChannelStartProcessingRequest(trafficChannel,
@@ -922,12 +922,14 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
                                         LOGGER.debug("NXDN traffic channel start rejected frequency:{} channel:{} reason:{}",
                                                 rejectedFrequency, channel, channelEvent.getDescription());
                                         mAllocatedTrafficChannelMap.remove(rejectedFrequency);
-                                        mAllocatedTrafficChannelDescriptorMap.remove(channel);
+                                        NXDNChannel descriptor = mAllocatedTrafficChannelDescriptorMap.remove(channel);
                                         mAvailableTrafficChannelQueue.add(channel);
 
                                         //Leave the event in the map so that it doesn't get recreated.  The channel
                                         //processing manager set the 'tuner not available' in the details already
-                                        NXDNChannelEventTracker tracker = mEventTrackerMap.get(rejectedFrequency);
+                                        long trackerFrequency = descriptor != null ? descriptor.getDownlinkFrequency() :
+                                                rejectedFrequency - mTrafficChannelFrequencyOffset;
+                                        NXDNChannelEventTracker tracker = mEventTrackerMap.get(trackerFrequency);
 
                                         if(tracker != null)
                                         {
