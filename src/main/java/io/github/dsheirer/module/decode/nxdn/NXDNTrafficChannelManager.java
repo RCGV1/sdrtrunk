@@ -437,15 +437,16 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
     {
         if(vca.hasChannel() && vca.getChannel().getDownlinkFrequency() > 0)
         {
-            LOGGER.debug("NXDN voice call assignment frequency:{} type:{} encrypted:{} timer:{} options:{}",
+            LOGGER.info("NXDN voice call assignment frequency:{} type:{} encrypted:{} timer:{} options:{} channel:{}",
                     vca.getChannel().getDownlinkFrequency(), vca.getCallType(),
-                    vca.getEncryptionKeyIdentifier().isEncrypted(), vca.getCallTimer(), vca.getCallOption());
+                    vca.getEncryptionKeyIdentifier().isEncrypted(), vca.getCallTimer(), vca.getCallOption(),
+                    vca.getChannel());
             processVoiceCall(vca.getIdentifiers(), vca.getChannel(), vca.getCallType(), vca.getEncryptionKeyIdentifier(),
                     vca.getTimestamp(), vca.getCallOption(), vca.getCallTimer());
         }
         else
         {
-            LOGGER.debug("NXDN voice call assignment missing usable channel hasChannel:{} channel:{} type:{} encrypted:{}",
+            LOGGER.warn("NXDN voice call assignment missing usable channel hasChannel:{} channel:{} type:{} encrypted:{}",
                     vca.hasChannel(), vca.getChannel(), vca.getCallType(), vca.getEncryptionKeyIdentifier().isEncrypted());
         }
     }
@@ -465,9 +466,9 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
             channel = new NXDNChannelFake(vca.getDestination().getValue());
         }
 
-        LOGGER.debug("NXDN duplicate traffic assignment frequency:{} type:{} encrypted:{} timer:{} options:{}",
+        LOGGER.info("NXDN duplicate traffic assignment frequency:{} type:{} encrypted:{} timer:{} options:{} channel:{}",
                 channel.getDownlinkFrequency(), vca.getCallType(), vca.getEncryptionKeyIdentifier().isEncrypted(),
-                vca.getCallTimer(), vca.getCallOption());
+                vca.getCallTimer(), vca.getCallOption(), channel);
 
         processVoiceCall(vca.getIdentifiers(), channel, vca.getCallType(), vca.getEncryptionKeyIdentifier(),
                 vca.getTimestamp(), vca.getCallOption(), vca.getCallTimer());
@@ -647,14 +648,14 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
                 }
                 else
                 {
-                    LOGGER.debug("NXDN no traffic channel available for frequency:{} identifiers:{}",
+                    LOGGER.warn("NXDN no traffic channel available for frequency:{} identifiers:{}",
                             frequency, ic.getIdentifiers());
                     tracker.addDetails(MAX_TRAFFIC_CHANNELS_EXCEEDED + " " + tracker.getEvent().getDetails());
                 }
             }
             else if(channel == null || !channel.isValid())
             {
-                LOGGER.debug("NXDN not allocating traffic channel frequency:{} channel:{} valid:{} controlFrequency:{} allocated:{}",
+                LOGGER.warn("NXDN not allocating traffic channel frequency:{} channel:{} valid:{} controlFrequency:{} allocated:{}",
                         frequency, channel, channel != null && channel.isValid(), getCurrentControlFrequency(),
                         mAllocatedTrafficChannelMap.containsKey(frequency));
             }
@@ -690,7 +691,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
             trafficChannel.setSourceConfiguration(sourceConfig);
             mAllocatedTrafficChannelMap.put(nxdnChannel.getDownlinkFrequency(), trafficChannel);
             mAllocatedTrafficChannelDescriptorMap.put(trafficChannel, nxdnChannel);
-            LOGGER.debug("NXDN starting traffic channel sourceFrequency:{} tunedFrequency:{} offset:{} channel:{} identifiers:{}",
+            LOGGER.info("NXDN starting traffic channel sourceFrequency:{} tunedFrequency:{} offset:{} channel:{} identifiers:{}",
                     nxdnChannel.getDownlinkFrequency(), sourceConfig.getFrequency(), mTrafficChannelFrequencyOffset,
                     trafficChannel, ic.getIdentifiers());
             ChannelStartProcessingRequest startChannelRequest = new ChannelStartProcessingRequest(trafficChannel,
@@ -701,7 +702,7 @@ public class NXDNTrafficChannelManager extends TrafficChannelManager implements 
         }
         else
         {
-            LOGGER.debug("NXDN unable to start traffic channel descriptor:{} busAvailable:{} downlink:{}",
+            LOGGER.warn("NXDN unable to start traffic channel descriptor:{} busAvailable:{} downlink:{}",
                     nxdnChannel, getInterModuleEventBus() != null,
                     nxdnChannel != null ? nxdnChannel.getDownlinkFrequency() : 0);
             //Return the channel to the traffic channel pool if we didn't start it.
